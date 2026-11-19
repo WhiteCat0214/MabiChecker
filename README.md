@@ -17,6 +17,8 @@
 
 ## 畫面與按鈕
 
+<img width="820" height="583" alt="MabiChecker" src="https://github.com/user-attachments/assets/0ff9202c-3617-48d3-b9ad-c8d3a098eee1" />
+
 | 按鈕 | 說明 |
 | --- | --- |
 | 檢查 | 開始比對檔案。進行中會變成「停止」。 |
