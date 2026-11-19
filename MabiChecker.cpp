@@ -48,6 +48,8 @@
 
 typedef unsigned long long u64;
 
+static void DisablePowerThrottling();   // 定義在檔案後段
+
 // ---------------------------------------------------------------- 常數
 static const wchar_t* kCdnHost        = L"tw.cdnpatch.mabinogi.beanfun.com";
 static const wchar_t* kPatchLivePath  = L"/mabinogi/patch_live.txt";
@@ -88,6 +90,7 @@ static std::wstring g_gameDir;
 static std::atomic<int>  g_busy{0};          // 0 閒置 / 1 檢查中 / 2 更新中
 static std::atomic<bool> g_cancel{false};
 static std::atomic<u64>  g_done{0}, g_total{0};
+static std::atomic<u64>  g_qpcRead{0}, g_qpcHash{0}, g_bytesRead{0};   // 效能診斷：讀檔/MD5 運算耗時
 
 static std::mutex   g_logMtx;
 static std::wstring g_report;                // 完整報告(存檔用)
@@ -264,13 +267,25 @@ static Md5Result Md5File(const std::wstring& path, std::string& hex, DWORD& err,
 
     std::vector<UCHAR> buf(1 << 20);
     Md5Result res = MD5_OK;
+    LARGE_INTEGER q0, q1;
     for (;;) {
         if (g_cancel) { res = MD5_CANCEL; break; }
         DWORD n = 0;
-        if (!ReadFile(hf, buf.data(), (DWORD)buf.size(), &n, nullptr)) { err = GetLastError(); res = MD5_READFAIL; break; }
+        QueryPerformanceCounter(&q0);
+        BOOL okRead = ReadFile(hf, buf.data(), (DWORD)buf.size(), &n, nullptr);
+        QueryPerformanceCounter(&q1);
+        if (countProgress) g_qpcRead += (u64)(q1.QuadPart - q0.QuadPart);
+        if (!okRead) { err = GetLastError(); res = MD5_READFAIL; break; }
         if (n == 0) break;
-        if (BCryptHashData(hh, buf.data(), n, 0) < 0) { res = MD5_INTERNAL; break; }
-        if (countProgress) g_done += n;
+        QueryPerformanceCounter(&q0);
+        NTSTATUS hs = BCryptHashData(hh, buf.data(), n, 0);
+        QueryPerformanceCounter(&q1);
+        if (hs < 0) { res = MD5_INTERNAL; break; }
+        if (countProgress) {
+            g_qpcHash += (u64)(q1.QuadPart - q0.QuadPart);
+            g_bytesRead += n;
+            g_done += n;
+        }
     }
 
     UCHAR dig[16] = {};
@@ -572,6 +587,7 @@ static void RunCheck() {
     g_bad.clear();
     g_checkComplete = false;
     g_checkedVer = -1;
+    g_qpcRead = 0; g_qpcHash = 0; g_bytesRead = 0;
     const u64 t0 = GetTickCount64();
 
     Log(L"=== 檔案完整性檢查 ===");
@@ -719,6 +735,17 @@ static void RunCheck() {
     Log(Fmt(L"清單項目：%d　正常：%d　缺少：%d　大小不符：%d　MD5 不符：%d　無法讀取：%d　略過：%d",
             (int)entries.size(), cOk, cMissing, cSize, cMd5, cUnread, cSkip));
     Log(Fmt(L"耗時：%ls", FmtDuration(sec).c_str()));
+    {
+        LARGE_INTEGER fq;
+        QueryPerformanceFrequency(&fq);
+        const double rs = (double)g_qpcRead.load() / (double)fq.QuadPart;
+        const double hs = (double)g_qpcHash.load() / (double)fq.QuadPart;
+        const double mb = (double)g_bytesRead.load() / 1048576.0;
+        if (mb > 0 && rs > 0 && hs > 0) {
+            Log(Fmt(L"效能：讀檔 %.1f 秒（%.0f MB/s）／MD5 運算 %.1f 秒（%.0f MB/s）／共處理 %.0f MB",
+                    rs, mb / rs, hs, mb / hs, mb));
+        }
+    }
 
     if (!g_bad.empty()) {
         u64 need = 0;
@@ -952,6 +979,7 @@ static void StartJob(int mode) {
         EnableWindow(g_hCheck, FALSE);
     }
     std::thread([mode]() {
+        DisablePowerThrottling();          // 工作執行緒本身也要關閉節能降速
         try {
             if (mode == 1) RunCheck(); else RunUpdate();
         } catch (...) {
@@ -1184,7 +1212,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+// 關閉 Windows 的節能降速(EcoQoS)：避免背景執行緒被排到效能核心以外或被降頻
+static void DisablePowerThrottling() {
+    PROCESS_POWER_THROTTLING_STATE ps = {};
+    ps.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    ps.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    ps.StateMask = 0;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &ps, sizeof(ps));
+
+    THREAD_POWER_THROTTLING_STATE ts = {};
+    ts.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    ts.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    ts.StateMask = 0;
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &ts, sizeof(ts));
+}
+
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
+    DisablePowerThrottling();
     SetProcessDPIAware();
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_PROGRESS_CLASS };
     InitCommonControlsEx(&icc);
