@@ -19,6 +19,11 @@
 
 <img width="820" height="583" alt="MabiChecker" src="https://github.com/user-attachments/assets/0ff9202c-3617-48d3-b9ad-c8d3a098eee1" />
 
+<img width="818" height="588" alt="MabiChecker_error" src="https://github.com/user-attachments/assets/15d2d4db-a20b-4168-80f8-977316498657" />
+
+<img width="819" height="590" alt="MabiChecker_repair" src="https://github.com/user-attachments/assets/1a7dca53-6d11-4cbe-a6d4-1247b1447565" />
+
+
 | 按鈕 | 說明 |
 | --- | --- |
 | 檢查 | 開始比對檔案。進行中會變成「停止」。 |
